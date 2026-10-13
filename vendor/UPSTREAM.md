@@ -6,3 +6,5 @@
 
 Copied verbatim, then patched. Every local change is marked with a `// DURABLE PATCH:` comment
 (`grep -rn "DURABLE PATCH" vendor/codemode`). See the "Patches against upstream" section of the top-level README.
+
+- License: MIT, copied to `vendor/codemode/LICENSE`.

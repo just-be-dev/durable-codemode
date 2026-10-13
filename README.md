@@ -1,8 +1,87 @@
 # durable-codemode
 
-A proof of concept: **opencode's code mode interpreter, made durable**. A script that fans out tool calls survives a
-process crash (a real `SIGKILL`) and resumes without re-running the tool calls that had finished. The design follows
-pi-durable's code mode (`pi/packages/durable/src/codemode/codemode.ts` and pi-codemode's deterministic VM).
+An experiment: can [opencode](https://github.com/anomalyco/opencode)'s code mode be made durable the way
+[pi-durable](https://github.com/earendil-works/pi/tree/main/packages/durable)'s code mode is?
+
+**Short answer: yes.** It takes a ~60-line patch to the interpreter, a custom Effect scheduler, and a SQLite journal. A
+script that fans out tool calls survives a real `SIGKILL` and resumes. Tool calls that had finished don't run again,
+and the final result is identical to a run that never crashed.
+
+## Background
+
+"Code mode" lets a model write a small JavaScript program that calls tools, instead of calling tools one at a time.
+Once a script can call a subagent tool, you get workflows: fan out ten reviewers, verify each finding with another
+agent, aggregate the result. All of that happens in one tool call.
+
+In October 2026 Mario Zechner [showed](https://x.com/badlogicgames/status/2109413968552820840) this running on
+pi-durable: Claude Code–style dynamic workflows "for free, durably", with every subagent inspectable and steerable.
+The durable part is pi-durable's code mode tool (`packages/durable/src/codemode/codemode.ts`). It works like this:
+
+1. pi runs the script in QuickJS with a virtual clock, a seeded PRNG, and UTC, so the same inputs produce the same
+   calls.
+2. Every tool result is written to a journal *before* the script sees it.
+3. After a crash, pi reruns the script from the start and hands it the journaled results in the same order. The script
+   makes the same calls again, so finished calls are matched to their saved results instead of running. Then it
+   continues live.
+4. If the script takes a different path than last time, the call ends with an error instead of guessing.
+
+opencode also has a code mode package, `@opencode/codemode`. Its runtime is quite different: a JS-subset interpreter
+written from scratch in Effect on top of `acorn`, not QuickJS. And it has no durability; its docs say "hosts remain
+responsible for … durable side effects". In opencode, a crash loses the script and everything it was doing.
+
+So the question was whether pi's approach carries over to an interpreter with a completely different execution model.
+
+## What I tried
+
+- Vendor `@opencode/codemode` at a pinned commit and change as little as possible. The patch adds one optional
+  `determinism: { now, random, randomUUID, getRandomValues }` option. It's written so it could plausibly go upstream,
+  and leaving it out keeps upstream behaviour.
+- Build the durable layer outside the interpreter: a journal, a wrapper around every tool, replay and divergence
+  checks, and a stored final result. These mirror pi-durable's design.
+- Test it with a real crash: spawn a worker process, `SIGKILL` it partway through a fan-out, restart it, and count
+  how many times each tool actually ran.
+
+## What I found
+
+**Clock and randomness had to be patched.** `Date.now()`, `Math.random()` and `crypto.randomUUID()` in opencode's
+stdlib go straight to the host. Extensions can't override built-ins, and replacing the process-wide `Date.now` would
+also change Effect's own clock. So this is the one thing that needed an interpreter patch: six files, +60/-9.
+Upstream's own 1,398 codemode tests still pass against the patched copy.
+
+**Result ordering was the hard part.** In QuickJS there's one job queue, so pi only has to control the order in which
+results go in. opencode's interpreter is different: every promise is its own Effect fiber, and a fiber resumes
+synchronously inside whatever callback completed it. Where a tool result lands among the script's pending steps
+therefore depends on wall-clock timing, not just on completion order:
+
+- Same results, same completion order, different spacing: b arriving 50 ms after a gives `a1,a2,a3,b`; 1 ms after
+  gives `a1,b,a2,a3`. Recording the completion order is not enough to replay a run.
+- A naive replay that hands back saved results immediately diverged in about 22 of 25 randomized trials.
+
+**The ordering fix needed no interpreter patch.** In Effect 4, the `Scheduler` can be supplied through context, and
+every fiber the interpreter starts inherits it. A custom `IdleScheduler` runs all of the interpreter's work in one
+queue and notices when the script is fully idle. Only then does it release the next result, after journaling it.
+That gives the same guarantee as pi's `deliver(seq, …)` + `idle`. With it, 25 of 25 randomized replays matched the
+live run exactly.
+
+**It works.** Killing the process mid-run and restarting gave these results:
+
+- Calls that had finished ran exactly once.
+- Calls that were in flight ran again.
+- The final value equals an uninterrupted run with the same seed.
+- Invoking a completed run again returns the stored result and runs nothing.
+- Changed scripts, tampered journals, and a changed tool set end with a stored error and start no new side effects.
+
+**Takeaway:** pi's journal-and-replay design isn't tied to QuickJS; any interpreter can use it if it offers two
+things. It must read time and randomness from an injectable source, and the host must be able to tell when the script
+is idle. QuickJS gets the second for free from its single job queue. opencode's fiber-per-promise interpreter needs a
+scheduler to provide it, and Effect makes that possible without touching the interpreter.
+
+This is also roughly what a pi-durable `VmLauncher` needs from an engine. An adapter that runs opencode's interpreter
+inside pi-durable would reuse most of this.
+
+The rest of this README is the technical write-up.
+
+## Running it
 
 ```sh
 bun install
