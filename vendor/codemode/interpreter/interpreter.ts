@@ -347,6 +347,7 @@ export class Interpreter<R> {
         ((bytes) => {
           crypto.getRandomValues(bytes)
         }),
+      utc: options.determinism?.utc ?? false,
     }
     // Program code has no receiver: top-level `this` is undefined, as in a module.
     const globalScope = new Map<string, Binding>([["this", { mutable: false, value: undefined }]])

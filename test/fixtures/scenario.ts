@@ -11,8 +11,9 @@ export class Ledger {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true })
-    this.db.exec("PRAGMA journal_mode = WAL")
+    // The busy timeout first: another process may be reading the file while this one switches it to WAL.
     this.db.exec("PRAGMA busy_timeout = 5000")
+    this.db.exec("PRAGMA journal_mode = WAL")
     this.db.exec(
       "CREATE TABLE IF NOT EXISTS effects (key TEXT PRIMARY KEY, starts INTEGER NOT NULL DEFAULT 0, finishes INTEGER NOT NULL DEFAULT 0)",
     )

@@ -63,6 +63,7 @@ export class VirtualWorld {
   }
 
   readonly determinism: Required<CodeMode.Determinism> = {
+    utc: true,
     now: () => this.current,
     random: () => this.next(),
     getRandomValues: (bytes) => this.bytes(bytes),

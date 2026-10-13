@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": false,
     "allowImportingTsExtensions": false
   },
-  "include": ["src", "vendor", "test", "demo"]
+  "include": ["src", "vendor", "test", "demo", "examples", "scripts"]
 }

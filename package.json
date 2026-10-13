@@ -7,9 +7,15 @@
     "test": "bun test",
     "demo": "bun run demo/crash-demo.ts",
     "typecheck": "tsc --noEmit",
-    "test:upstream": "sh scripts/upstream-tests.sh"
+    "test:upstream": "sh scripts/upstream-tests.sh",
+    "demo:pi": "bun run examples/pi-durable/demo.ts",
+    "test:pi": "bun scripts/pi-tests.ts"
   },
   "dependencies": {
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-codemode": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0",
     "acorn": "8.15.0",
     "effect": "4.0.1"
   },

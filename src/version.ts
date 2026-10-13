@@ -8,7 +8,7 @@ export const UPSTREAM_COMMIT = "69a71426ce74bf8362fa6183937b008fa24a5dfe"
  * PRNG, the delivery rules. Bump it when any of that changes, so a run started before an upgrade is not replayed by
  * different code.
  */
-export const MODULE_VERSION = 1
+export const MODULE_VERSION = 2
 
 /**
  * The interpreter's interleaving rests on Effect's fiber runtime (how `Effect.all` forks, when a fiber yields), so a

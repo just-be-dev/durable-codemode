@@ -58,9 +58,9 @@ export class SqliteJournalStore implements JournalStore {
 
   constructor(path: string) {
     this.db = new Database(path, { create: true })
+    this.db.exec("PRAGMA busy_timeout = 5000")
     this.db.exec("PRAGMA journal_mode = WAL")
     this.db.exec("PRAGMA synchronous = FULL")
-    this.db.exec("PRAGMA busy_timeout = 5000")
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS runs (
         run_id TEXT PRIMARY KEY, code TEXT NOT NULL, seed INTEGER NOT NULL, started_at INTEGER NOT NULL,

@@ -52,6 +52,8 @@ export type Determinism = {
   readonly randomUUID?: () => string
   /** Fills `bytes` in place, for `crypto.getRandomValues()`. */
   readonly getRandomValues?: (bytes: Uint8Array) => void
+  /** Treat local time as UTC, whatever the host's time zone (`getHours()`, `new Date(y, m, d)`, ...). Default false. */
+  readonly utc?: boolean
 }
 
 /** Configuration shared by `CodeMode.make` and `CodeMode.execute`. */
