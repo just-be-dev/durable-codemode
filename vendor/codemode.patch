@@ -1,0 +1,191 @@
+diff -ru upstream/codemode.ts vendor/codemode/codemode.ts
+--- upstream/codemode.ts
++++ vendor/codemode/codemode.ts
+@@ -40,6 +40,20 @@
+   readonly maxOutputBytes: number | undefined
+ }
+ 
++// DURABLE PATCH: host-supplied sources of non-determinism. Every value a program can observe that does not come from its
++// source, its tools, or its extensions flows through these, so an embedder can make an execution replayable.
++/** Sources of time and randomness for programs. Each defaults to the host's (`Date.now`, `Math.random`, `crypto`). */
++export type Determinism = {
++  /** Milliseconds since the epoch, for `Date.now()`, `new Date()`, and `Date()`. */
++  readonly now?: () => number
++  /** A float in [0, 1), for `Math.random()`. */
++  readonly random?: () => number
++  /** For `crypto.randomUUID()`. */
++  readonly randomUUID?: () => string
++  /** Fills `bytes` in place, for `crypto.getRandomValues()`. */
++  readonly getRandomValues?: (bytes: Uint8Array) => void
++}
++
+ /** Configuration shared by `CodeMode.make` and `CodeMode.execute`. */
+ export type Options<Provided extends Record<string, unknown> = {}> = {
+   /** Explicit tools exposed to the program as `tools`. */
+@@ -50,6 +64,9 @@
+   extensions?: ReadonlyArray<Extension>
+   /** Resource limits enforced on each execution. */
+   limits?: ExecutionLimits
++  // DURABLE PATCH: see `Determinism`.
++  /** Sources of time and randomness; defaults to the host's. */
++  determinism?: Determinism
+ }
+ 
+ /** Options for one CodeMode execution. */
+@@ -160,6 +177,14 @@
+       return prepared.catalog
+     },
+     execute: (code) =>
+-      executeProgram(code, prepared, limits, options.hooks ?? {}, (ctx) => extensionGlobals(ctx, extensions)),
++      // DURABLE PATCH: thread `determinism` through to the interpreter.
++      executeProgram(
++        code,
++        prepared,
++        limits,
++        options.hooks ?? {},
++        (ctx) => extensionGlobals(ctx, extensions),
++        options.determinism,
++      ),
+   }
+ }
+diff -ru upstream/interpreter/execute.ts vendor/codemode/interpreter/execute.ts
+--- upstream/interpreter/execute.ts
++++ vendor/codemode/interpreter/execute.ts
+@@ -1,6 +1,6 @@
+ import { parse, type Program } from "acorn"
+ import { Cause, Effect, Scope } from "effect"
+-import type { DataValue, Diagnostic, ResolvedExecutionLimits, Result } from "../codemode.js"
++import type { DataValue, Determinism, Diagnostic, ResolvedExecutionLimits, Result } from "../codemode.js"
+ import { toBoundary } from "../data.js"
+ import { ToolRuntime } from "../tool-runtime.js"
+ import { normalizeError } from "./errors.js"
+@@ -15,6 +15,8 @@
+   limits: ResolvedExecutionLimits,
+   hooks: ToolRuntime.Hooks<R>,
+   globals?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>,
++  // DURABLE PATCH: host-supplied time and randomness.
++  determinism?: Determinism,
+ ): Effect.Effect<Result, never, R> => {
+   if (code.trim().length === 0) {
+     return Effect.succeed({
+@@ -39,7 +41,8 @@
+         Effect.gen(function* () {
+           const program = parseProgram(code)
+           const pending = new Pending<R>(scope, builtins.Promise)
+-          const ctx = new Interpreter<R>({ tools, pending, builtins, logs, globals })
++          // DURABLE PATCH: pass `determinism` to the interpreter.
++          const ctx = new Interpreter<R>({ tools, pending, builtins, logs, globals, determinism })
+           const result = (yield* toBoundary(ctx, yield* ctx.run(program))) ?? null
+           returned = { value: result, pending }
+           const warnings = yield* pending.interrupt()
+diff -ru upstream/interpreter/interpreter.ts vendor/codemode/interpreter/interpreter.ts
+--- upstream/interpreter/interpreter.ts
++++ vendor/codemode/interpreter/interpreter.ts
+@@ -45,6 +45,8 @@
+   YieldExpression,
+ } from "acorn"
+ import { Cause, Deferred, Effect, Exit } from "effect"
++// DURABLE PATCH: the host's sources of time and randomness.
++import type { Determinism } from "../codemode.js"
+ import { fromJson, type Json, toBoundary } from "../data.js"
+ import { ToolReference, type ToolRuntime } from "../tool-runtime.js"
+ import {
+@@ -318,6 +320,8 @@
+   readonly logs: Array<string>
+   /** Template objects by site: a tag sees the same `strings` array every time its literal is evaluated, as in JS. */
+   readonly templates = new WeakMap<TaggedTemplateExpression, Arr>()
++  // DURABLE PATCH: where the standard library reads time and randomness.
++  readonly determinism: Required<Determinism>
+   private readonly root: Frame<R>
+ 
+   constructor(options: {
+@@ -326,11 +330,24 @@
+     readonly builtins: Builtins
+     readonly logs?: Array<string>
+     readonly globals?: (ctx: Interpreter<R>) => ReadonlyArray<readonly [string, Value]>
++    // DURABLE PATCH: host-supplied time and randomness; each defaults to the host's.
++    readonly determinism?: Determinism
+   }) {
+     this.tools = options.tools
+     this.pending = options.pending
+     this.builtins = options.builtins
+     this.logs = options.logs ?? []
++    // DURABLE PATCH: resolve the defaults once, before any global reads them.
++    this.determinism = {
++      now: options.determinism?.now ?? (() => Date.now()),
++      random: options.determinism?.random ?? (() => Math.random()),
++      randomUUID: options.determinism?.randomUUID ?? (() => crypto.randomUUID()),
++      getRandomValues:
++        options.determinism?.getRandomValues ??
++        ((bytes) => {
++          crypto.getRandomValues(bytes)
++        }),
++    }
+     // Program code has no receiver: top-level `this` is undefined, as in a module.
+     const globalScope = new Map<string, Binding>([["this", { mutable: false, value: undefined }]])
+     // Calling back into the program never reads frame state, so any frame serves; the root is always alive.
+diff -ru upstream/stdlib/date.ts vendor/codemode/stdlib/date.ts
+--- upstream/stdlib/date.ts
++++ vendor/codemode/stdlib/date.ts
+@@ -6,7 +6,8 @@
+ import type { Interpreter } from "../interpreter/interpreter.js"
+ 
+ const constructDate = <R>(ctx: Interpreter<R>, args: Array<Value>, proto: Obj) => {
+-  if (args.length === 0) return Effect.succeed(new DateObj(proto, Date.now()))
++  // DURABLE PATCH: the current time comes from the host's `determinism.now`.
++  if (args.length === 0) return Effect.succeed(new DateObj(proto, ctx.determinism.now()))
+   if (args.length === 1) {
+     const arg = args[0]
+     if (arg instanceof DateObj) return Effect.succeed(new DateObj(proto, arg.time))
+@@ -76,11 +77,13 @@
+     name: "Date",
+     length: 7,
+     // ISO instead of the host's locale string: date strings are deterministic and must not leak the host timezone.
+-    call: () => Effect.sync(() => new Date().toISOString()),
++    // DURABLE PATCH: the current time comes from the host's `determinism.now`.
++    call: () => Effect.sync(() => new Date(ctx.determinism.now()).toISOString()),
+     construct: (args, newTarget) => constructDate(ctx, args, prototypeFrom(newTarget, proto)),
+   })
+   methods(builtins, date, [
+-    ["now", 0, () => Date.now()],
++    // DURABLE PATCH: the current time comes from the host's `determinism.now`.
++    ["now", 0, () => ctx.determinism.now()],
+     ["parse", 1, (_, args) => Date.parse(coerceToString(args[0]))],
+     [
+       "UTC",
+diff -ru upstream/stdlib/math.ts vendor/codemode/stdlib/math.ts
+--- upstream/stdlib/math.ts
++++ vendor/codemode/stdlib/math.ts
+@@ -44,7 +44,8 @@
+     SQRT1_2: Math.SQRT1_2,
+   })
+   methods(builtins, math, [
+-    ["random", 0, () => Math.random()],
++    // DURABLE PATCH: randomness comes from the host's `determinism.random`.
++    ["random", 0, () => ctx.determinism.random()],
+     variadic("max", Math.max),
+     variadic("min", Math.min),
+     variadic("hypot", Math.hypot),
+diff -ru upstream/stdlib/web.ts vendor/codemode/stdlib/web.ts
+--- upstream/stdlib/web.ts
++++ vendor/codemode/stdlib/web.ts
+@@ -101,7 +101,8 @@
+ export const cryptoGlobal = <R>(ctx: Interpreter<R>) => {
+   const object = new Obj(ctx.builtins.Object)
+   methods(ctx.builtins, object, [
+-    ["randomUUID", 0, () => crypto.randomUUID()],
++    // DURABLE PATCH: randomness comes from the host's `determinism`.
++    ["randomUUID", 0, () => ctx.determinism.randomUUID()],
+     [
+       "getRandomValues",
+       1,
+@@ -109,7 +110,8 @@
+         if (!(args[0] instanceof Bytes)) {
+           throw typeError(`crypto.getRandomValues expects a Uint8Array, received ${describeValue(args[0])}.`)
+         }
+-        crypto.getRandomValues(args[0].bytes)
++        // DURABLE PATCH: randomness comes from the host's `determinism`.
++        ctx.determinism.getRandomValues(args[0].bytes)
+         return args[0]
+       },
+     ],

@@ -1,0 +1,20 @@
+{
+  "name": "durable-codemode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "demo": "bun run demo/crash-demo.ts",
+    "typecheck": "tsc --noEmit",
+    "test:upstream": "sh scripts/upstream-tests.sh"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "effect": "4.0.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
+  }
+}
